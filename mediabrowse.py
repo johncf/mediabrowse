@@ -34,6 +34,7 @@ from typing import BinaryIO, Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from PIL import Image, ImageOps
+from pydantic import BaseModel
 
 try:  # optional HEIC support
     from pillow_heif import register_heif_opener
@@ -324,6 +325,43 @@ class KeyedLocks:
 
 
 # --------------------------------------------------------------------------
+# Favorites (plain text file, one relative path per line)
+# --------------------------------------------------------------------------
+
+
+class Favorites:
+    def __init__(self, path: Path):
+        self.path = Path(path).expanduser()
+        self._lock = threading.Lock()
+
+    def _read(self) -> list[str]:
+        try:
+            lines = self.path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        return list(dict.fromkeys(l.strip() for l in lines if l.strip()))
+
+    def all(self) -> list[str]:
+        with self._lock:
+            return self._read()
+
+    def set(self, rel: str, on: bool) -> list[str]:
+        with self._lock:
+            # re-read every time so hand edits to the file aren't clobbered
+            favs = self._read()
+            if on and rel not in favs:
+                favs.append(rel)
+            elif not on and rel in favs:
+                favs.remove(rel)
+            else:
+                return favs
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            tmp.write_text("".join(f + "\n" for f in favs), encoding="utf-8")
+            os.replace(tmp, self.path)  # atomic: never leave a half-written file
+            return favs
+
+
+# --------------------------------------------------------------------------
 # Thumbnail generation
 # --------------------------------------------------------------------------
 
@@ -394,7 +432,12 @@ def generate_thumb(source: Source, entry: Entry, size: int) -> bytes:
 # --------------------------------------------------------------------------
 
 
-def create_app(source: Source, cache: ThumbCache) -> FastAPI:
+class FavoriteIn(BaseModel):
+    path: str
+    on: bool = True
+
+
+def create_app(source: Source, cache: ThumbCache, favorites: Favorites) -> FastAPI:
     app = FastAPI(title="mediabrowse", docs_url=None, redoc_url=None)
     locks = KeyedLocks()
     slots = threading.Semaphore(max(2, os.cpu_count() or 2))  # cap concurrent thumb jobs
@@ -424,6 +467,28 @@ def create_app(source: Source, cache: ThumbCache) -> FastAPI:
         path = clean_path(path)
         entries = source.list(path)
         return {"path": path, "label": source.label, "entries": [asdict(e) for e in entries]}
+
+    @app.get("/api/favorites")
+    def api_favorites():
+        return {"paths": favorites.all()}
+
+    @app.get("/api/favorites/entries")
+    def api_favorite_entries():
+        entries = []
+        for path in reversed(favorites.all()):  # most recently favorited first
+            try:
+                entries.append(asdict(source.stat(clean_path(path))))
+            except (OSError, ValueError):
+                continue  # moved/deleted since it was favorited; leave the line alone
+        return {"path": "", "label": source.label, "entries": entries}
+
+    # JSON body (not query params) so a random web page can't toggle favorites
+    # with a simple cross-site form POST
+    @app.post("/api/favorites")
+    def api_set_favorite(body: FavoriteIn):
+        path = clean_path(body.path)
+        source.stat(path)  # only real media files can be favorited
+        return {"paths": favorites.set(path, body.on)}
 
     @app.get("/thumb")
     def thumb(request: Request, path: str, size: int = 256):
@@ -514,7 +579,13 @@ header{position:sticky;top:0;z-index:5;display:flex;gap:12px;align-items:center;
 #crumbs a{color:var(--accent);text-decoration:none}
 #crumbs a:hover{text-decoration:underline}
 #crumbs .sep{color:var(--dim)}
-#filter{background:var(--panel);border:1px solid #333;color:var(--fg);padding:6px 10px;border-radius:8px;width:180px}
+.hbtn{display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:8px;
+  background:none;color:var(--dim);font-size:19px;line-height:1;text-decoration:none;cursor:pointer}
+.hbtn:hover{background:var(--panel);color:var(--fg)}
+#favlink.on{color:#ffcc33}
+#filter{display:none;background:var(--panel);border:1px solid #333;color:var(--fg);padding:6px 10px;border-radius:8px;width:180px}
+#search.open #filter{display:block}
+#search.open #searchbtn{display:none}
 #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;padding:16px}
 .tile{position:relative;display:block;aspect-ratio:1;background:var(--panel);border-radius:10px;overflow:hidden;
   cursor:pointer;color:inherit;text-decoration:none}
@@ -524,6 +595,10 @@ header{position:sticky;top:0;z-index:5;display:flex;gap:12px;align-items:center;
 .tile .name{position:absolute;left:0;right:0;bottom:0;padding:18px 8px 6px;font-size:12px;
   background:linear-gradient(transparent,rgba(0,0,0,.75));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tile .badge{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.6);border-radius:999px;padding:2px 8px;font-size:12px}
+.tile .fav{position:absolute;top:6px;left:6px;width:30px;height:30px;border:0;border-radius:50%;padding:0;
+  background:rgba(0,0,0,.55);color:#fff;font-size:17px;line-height:30px;cursor:pointer;opacity:0}
+.tile:hover .fav,.tile .fav.on{opacity:1}
+.fav.on{color:#ffcc33}
 #empty{padding:40px;text-align:center;color:var(--dim)}
 #lb{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;z-index:10;align-items:center;justify-content:center}
 #lb.open{display:flex}
@@ -536,18 +611,25 @@ header{position:sticky;top:0;z-index:5;display:flex;gap:12px;align-items:center;
 #prev{left:16px;top:50%;margin-top:-24px}
 #next{right:16px;top:50%;margin-top:-24px}
 #close{right:16px;top:16px}
+#lbfav{right:72px;top:16px;font-size:22px}
 </style></head>
 <body>
-<header><div id="crumbs"></div><input id="filter" type="search" placeholder="Filter..."></header>
+<header><div id="crumbs"></div><a id="favlink" class="hbtn" href="#:favorites" title="Favorites">&#9733;</a>
+<div id="search"><button id="searchbtn" class="hbtn" title="Filter (/)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+  stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg></button>
+<input id="filter" type="search" placeholder="Filter..."></div></header>
 <div id="grid"></div>
 <div id="empty" hidden></div>
 <div id="lb"><div id="stage"></div><div id="cap"></div>
-<button id="prev" title="Previous">&#8249;</button><button id="next" title="Next">&#8250;</button><button id="close" title="Close">&#10005;</button></div>
+<button id="prev" title="Previous">&#8249;</button><button id="next" title="Next">&#8250;</button><button id="close" title="Close">&#10005;</button><button id="lbfav" class="fav" title="Favorite (F)">&#9734;</button></div>
 <script>
 const $ = s => document.querySelector(s);
 const enc = encodeURIComponent;
 const ICON = {dir: "\uD83D\uDCC1", image: "\uD83D\uDDBC\uFE0F", video: "\uD83C\uDF9E\uFE0F", audio: "\uD83C\uDFB5"};
 let state = {path: "", label: "", entries: []}, shown = [], lbIndex = -1;
+let favs = new Set();
+// ':' is always percent-encoded in folder hashes, so this can't collide with a real path
+const FAV_HASH = "#:favorites";
 
 function el(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
@@ -566,8 +648,9 @@ function fmt(n) {
 }
 
 async function load() {
-  const path = decodeURIComponent(location.hash.slice(1));
-  const r = await fetch("/api/list?path=" + enc(path));
+  const favView = location.hash === FAV_HASH;
+  const path = favView ? "" : decodeURIComponent(location.hash.slice(1));
+  const r = await fetch(favView ? "/api/favorites/entries" : "/api/list?path=" + enc(path));
   if (!r.ok) {
     renderCrumbs(path, state.label);
     $("#grid").replaceChildren();
@@ -576,16 +659,49 @@ async function load() {
     return;
   }
   const d = await r.json();
-  state = {path: d.path, label: d.label, entries: d.entries};
+  state = {path: d.path, label: d.label, entries: d.entries, favView};
   $("#filter").value = "";
-  document.title = d.label + (d.path ? " / " + d.path : "");
-  renderCrumbs(d.path, d.label);
+  $("#search").classList.remove("open");
+  $("#favlink").classList.toggle("on", favView);
+  document.title = d.label + (favView ? " / Favorites" : d.path ? " / " + d.path : "");
+  renderCrumbs(d.path, d.label, favView);
   render();
   window.scrollTo(0, 0);
 }
 
-function renderCrumbs(path, label) {
+async function loadFavs() {
+  const r = await fetch("/api/favorites");
+  if (r.ok) favs = new Set((await r.json()).paths);
+}
+async function toggleFav(path) {
+  const r = await fetch("/api/favorites", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({path, on: !favs.has(path)}),
+  });
+  if (!r.ok) return;
+  favs = new Set((await r.json()).paths);
+  document.querySelectorAll(".fav").forEach(syncFav);
+}
+function syncFav(b) {
+  const on = favs.has(b.dataset.path);
+  b.classList.toggle("on", on);
+  b.textContent = on ? "\u2605" : "\u2606";
+  b.title = on ? "Unfavorite" : "Favorite";
+}
+function favButton(path, attrs = {}) {
+  const b = el("button", {class: "fav", ...attrs});
+  b.dataset.path = path;
+  b.onclick = ev => { ev.stopPropagation(); toggleFav(path); };
+  syncFav(b);
+  return b;
+}
+
+function renderCrumbs(path, label, favView = false) {
   const c = $("#crumbs"); c.replaceChildren();
+  if (favView) {
+    c.append(el("a", {href: "#"}, label), el("span", {class: "sep"}, "/"), el("b", {}, "\u2605 Favorites"));
+    return;
+  }
   const parts = path ? path.split("/") : [];
   c.append(parts.length ? el("a", {href: "#"}, label) : el("b", {}, label));
   let acc = "";
@@ -598,11 +714,12 @@ function renderCrumbs(path, label) {
 
 function render() {
   const q = $("#filter").value.trim().toLowerCase();
-  shown = state.entries.filter(e => !q || e.name.toLowerCase().includes(q));
+  // in the favorites view, match on the folder too since files come from all over
+  shown = state.entries.filter(e => !q || (state.favView ? e.path : e.name).toLowerCase().includes(q));
   const grid = $("#grid"); grid.replaceChildren();
   shown.forEach((e, i) => grid.append(tile(e, i)));
   $("#empty").hidden = shown.length > 0;
-  $("#empty").textContent = q ? "No matches." : "No media files here.";
+  $("#empty").textContent = q ? "No matches." : state.favView ? "No favorites yet." : "No media files here.";
 }
 
 function tile(e, i) {
@@ -618,7 +735,8 @@ function tile(e, i) {
     t.append(img);
     if (e.kind === "video") t.append(el("div", {class: "badge"}, "\u25B6"));
   }
-  t.append(el("div", {class: "name"}, e.name));
+  t.append(el("div", {class: "name", title: e.path}, state.favView ? e.path : e.name));
+  if (!e.is_dir) t.append(favButton(e.path));
   return t;
 }
 
@@ -637,6 +755,9 @@ function openLb(i) {
   else m = el("audio", {src, controls: "", autoplay: ""});
   $("#stage").append(m);
   $("#cap").textContent = e.name + "  (" + fmt(e.size) + ")";
+  const fb = $("#lbfav");
+  fb.dataset.path = e.path;
+  syncFav(fb);
   $("#lb").classList.add("open");
 }
 function closeLb() { clearStage(); $("#lb").classList.remove("open"); lbIndex = -1; }
@@ -647,19 +768,35 @@ function step(d) {
   if (i >= 0 && i < shown.length) openLb(i);
 }
 
+function openSearch() { $("#search").classList.add("open"); $("#filter").focus(); }
+$("#searchbtn").onclick = openSearch;
+// collapse back to the icon when the box is left empty
+$("#filter").addEventListener("blur", () => { if (!$("#filter").value) $("#search").classList.remove("open"); });
+$("#filter").addEventListener("keydown", ev => {
+  if (ev.key !== "Escape") return;
+  $("#filter").value = "";
+  render();
+  $("#filter").blur();
+});
+
 $("#close").onclick = closeLb;
+$("#lbfav").onclick = () => { if (lbIndex >= 0) toggleFav(shown[lbIndex].path); };
 $("#prev").onclick = () => step(-1);
 $("#next").onclick = () => step(1);
 $("#lb").addEventListener("click", ev => { if (ev.target.id === "lb" || ev.target.id === "stage") closeLb(); });
 document.addEventListener("keydown", ev => {
-  if (lbIndex < 0) return;
+  if (lbIndex < 0) {
+    if (ev.key === "/" && document.activeElement !== $("#filter")) { ev.preventDefault(); openSearch(); }
+    return;
+  }
   if (ev.key === "Escape") closeLb();
   else if (ev.key === "ArrowLeft") step(-1);
   else if (ev.key === "ArrowRight") step(1);
+  else if (ev.key === "f" || ev.key === "F") toggleFav(shown[lbIndex].path);
 });
 $("#filter").addEventListener("input", render);
 window.addEventListener("hashchange", load);
-load();
+loadFavs().then(load);
 </script></body></html>
 """
 
@@ -683,6 +820,8 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--cache", type=Path, default=default_cache_path(), help="thumbnail cache database")
     ap.add_argument("--open", action="store_true", help="open the browser on start")
+    ap.add_argument("--favorites", type=Path,
+                    help="favorites list (default: favorites.txt in the folder, or <name>.favorites.txt next to a zip)")
     args = ap.parse_args()
 
     p = Path(args.source).expanduser()
@@ -692,15 +831,18 @@ def main() -> None:
         source = ZipSource(p)
     else:
         ap.error(f"{args.source!r} is not a directory or a zip file")
+    if args.favorites is None:
+        p = p.resolve()
+        args.favorites = p / "favorites.txt" if p.is_dir() else p.with_name(p.stem + ".favorites.txt")
 
     if not shutil.which("ffmpeg"):
         print("note: ffmpeg not found - video thumbnails disabled (brew install ffmpeg)", file=sys.stderr)
 
     import uvicorn
 
-    app = create_app(source, ThumbCache(args.cache))
+    app = create_app(source, ThumbCache(args.cache), Favorites(args.favorites))
     url = f"http://{args.host}:{args.port}/"
-    print(f"Serving {source.label} at {url}  (thumb cache: {args.cache})")
+    print(f"Serving {source.label} at {url}  (thumb cache: {args.cache}, favorites: {args.favorites})")
     if args.open:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
