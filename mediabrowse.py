@@ -590,6 +590,7 @@ header{position:sticky;top:0;z-index:5;display:flex;gap:12px;align-items:center;
 .tile{position:relative;display:block;aspect-ratio:1;background:var(--panel);border-radius:10px;overflow:hidden;
   cursor:pointer;color:inherit;text-decoration:none}
 .tile:hover{outline:2px solid var(--accent)}
+.tile.recent{outline:2px solid var(--accent);outline-offset:3px}
 .tile img{width:100%;height:100%;object-fit:cover;display:block}
 .tile .ico{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:48px}
 .tile .name{position:absolute;left:0;right:0;bottom:0;padding:18px 8px 6px;font-size:12px;
@@ -659,6 +660,7 @@ async function load() {
     return;
   }
   const d = await r.json();
+  const prev = state;
   state = {path: d.path, label: d.label, entries: d.entries, favView};
   $("#filter").value = "";
   $("#search").classList.remove("open");
@@ -666,7 +668,20 @@ async function load() {
   document.title = d.label + (favView ? " / Favorites" : d.path ? " / " + d.path : "");
   renderCrumbs(d.path, d.label, favView);
   render();
-  window.scrollTo(0, 0);
+  const t = !favView && !prev.favView && cameFrom(prev.path, d.path);
+  if (t) {
+    t.classList.add("recent");
+    t.scrollIntoView({block: "center"});
+  } else window.scrollTo(0, 0);
+}
+
+// going up from a/b/c to a: return the tile for a/b
+function cameFrom(prevPath, path) {
+  if (prevPath === path || (path && !prevPath.startsWith(path + "/"))) return null;
+  const rest = prevPath.slice(path ? path.length + 1 : 0);
+  const child = (path ? path + "/" : "") + rest.split("/")[0];
+  const i = shown.findIndex(e => e.path === child);
+  return i < 0 ? null : $("#grid").children[i];
 }
 
 async function loadFavs() {
