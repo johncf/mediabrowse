@@ -649,6 +649,7 @@ function fmt(n) {
 }
 
 async function load() {
+  if (lbIndex >= 0) closeLb();  // e.g. the phone's back gesture while viewing
   const favView = location.hash === FAV_HASH;
   const path = favView ? "" : decodeURIComponent(location.hash.slice(1));
   const r = await fetch(favView ? "/api/favorites/entries" : "/api/list?path=" + enc(path));
@@ -760,8 +761,20 @@ function clearStage() {
   st.querySelectorAll("video,audio").forEach(m => { m.pause(); m.removeAttribute("src"); m.load(); });
   st.replaceChildren();
 }
+// overflow:hidden doesn't stop iOS from scrolling the page behind the viewer, so pin the body
+let savedY = 0;
+function lockScroll() {
+  savedY = window.scrollY;
+  Object.assign(document.body.style, {position: "fixed", top: -savedY + "px", left: "0", right: "0"});
+}
+function unlockScroll() {
+  Object.assign(document.body.style, {position: "", top: "", left: "", right: ""});
+  window.scrollTo(0, savedY);
+}
+
 function openLb(i) {
   clearStage();
+  if (lbIndex < 0) lockScroll();
   lbIndex = i;
   const e = shown[i], src = "/file?path=" + enc(e.path);
   let m;
@@ -779,7 +792,7 @@ function openLb(i) {
   $("#next").hidden = neighbor(1) < 0;
   $("#lb").classList.add("open");
 }
-function closeLb() { clearStage(); $("#lb").classList.remove("open"); lbIndex = -1; }
+function closeLb() { clearStage(); $("#lb").classList.remove("open"); lbIndex = -1; unlockScroll(); }
 // index of the next file (skipping folders) in direction d, or -1 at either end
 function neighbor(d) {
   let i = lbIndex + d;
