@@ -7,7 +7,7 @@
     python mediabrowse.py ~/Downloads/holiday.zip --port 9000 --open
 
 Thumbnails are generated lazily and kept in one SQLite file
-(default: ~/Library/Caches/mediabrowse/thumbs.db on macOS).
+(default: ~/.cache/mediabrowse/thumbs.db).
 """
 from __future__ import annotations
 
@@ -865,8 +865,6 @@ loadFavs().then(load);
 
 
 def default_cache_path() -> Path:
-    if sys.platform == "darwin":
-        base = Path.home() / "Library" / "Caches"
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "mediabrowse" / "thumbs.db"
 
