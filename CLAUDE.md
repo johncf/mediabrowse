@@ -1,14 +1,14 @@
 # CLAUDE.md
 
-Single-file local media browser: `mediabrowse.py` (FastAPI + uvicorn backend, vanilla-JS
-frontend embedded as a string). User docs are in `README.md`.
+Local media browser: `mediabrowse.py` (FastAPI + uvicorn backend) and `index.html` (the
+whole frontend: HTML, CSS and vanilla JS in one file). User docs are in `README.md`.
 
 ## Layout of mediabrowse.py
 
 Sections are separated by `# ----` banner comments, in this order:
 
-1. **Media types:** extension sets, `kind_of()`, `clean_path()` (rejects `..` and NUL in
-   client-supplied paths).
+1. **Media types:** `INDEX_HTML` (path to `index.html`), extension sets, `kind_of()`,
+   `clean_path()` (rejects `..` and NUL in client-supplied paths).
 2. **Sources:** `Source` interface with `DirSource` and `ZipSource`. Paths everywhere are
    relative and `/`-separated, with `''` as the root. `DirSource._resolve` also blocks
    symlinks that escape the root. `ZipSource` indexes the zip once at startup and keeps
@@ -18,15 +18,15 @@ Sections are separated by `# ----` banner comments, in this order:
 4. **Favorites:** `Favorites` re-reads the text file on every call and writes atomically
    (tmp file + `os.replace`).
 5. **Thumbnail generation:** Pillow for images, `ffmpeg` subprocess for video.
-6. **Web app:** `create_app()`. Endpoints: `/`, `/api/list`, `/api/favorites` (GET and
-   POST), `/api/favorites/entries`, `/thumb`, `/file` (supports Range requests for video
-   seeking).
-7. **Frontend:** `INDEX_HTML`, a raw string (`r"""`) holding all HTML, CSS and JS.
-8. **CLI:** `main()`.
+6. **Web app:** `create_app()`. Endpoints: `/` (reads `index.html` on every request, so
+   frontend edits only need a browser reload, not a restart), `/api/list`,
+   `/api/favorites` (GET and POST), `/api/favorites/entries`, `/thumb`, `/file` (supports
+   Range requests for video seeking).
+7. **CLI:** `main()`.
 
 ## Conventions
 
-- Keep it one file with no build step and no frontend dependencies.
+- Keep it to these two files, with no build step and no frontend dependencies.
 - Endpoints that block (disk, Pillow, ffmpeg, sqlite) are plain `def` so they run in
   FastAPI's threadpool. Don't make them `async def`.
 - Run every client-supplied path through `clean_path()` and then `source.stat()` or
@@ -39,8 +39,6 @@ Sections are separated by `# ----` banner comments, in this order:
   `encodeURIComponent`. Routing is by `location.hash`: `#<encoded path>` for folders and
   `#:favorites` for the favorites view (`:` is always percent-encoded in folder hashes,
   so this can't collide with a folder).
-- `INDEX_HTML` is a raw string, so JS escapes like `"★"` are written as-is and are
-  interpreted by the browser, not by Python.
 - Comments are sparse and explain *why*, not *what*.
 
 ## Users and testing

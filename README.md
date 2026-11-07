@@ -1,7 +1,8 @@
 # mediabrowse
 
 Browse the photos, videos and audio in a folder or a zip file from your web browser,
-including your phone. It's one Python file with no build step.
+including your phone. It's one Python file (`mediabrowse.py`) plus its frontend
+(`index.html`), with no build step. Keep the two files together.
 
 ## Setup
 
