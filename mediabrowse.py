@@ -773,15 +773,43 @@ function openLb(i) {
   const fb = $("#lbfav");
   fb.dataset.path = e.path;
   syncFav(fb);
+  $("#prev").hidden = neighbor(-1) < 0;
+  $("#next").hidden = neighbor(1) < 0;
   $("#lb").classList.add("open");
 }
 function closeLb() { clearStage(); $("#lb").classList.remove("open"); lbIndex = -1; }
-function step(d) {
-  if (lbIndex < 0) return;
+// index of the next file (skipping folders) in direction d, or -1 at either end
+function neighbor(d) {
   let i = lbIndex + d;
   while (i >= 0 && i < shown.length && shown[i].is_dir) i += d;
-  if (i >= 0 && i < shown.length) openLb(i);
+  return i >= 0 && i < shown.length ? i : -1;
 }
+function step(d) {
+  if (lbIndex < 0) return;
+  const i = neighbor(d);
+  if (i >= 0) openLb(i);
+}
+
+// swipe left/right in the viewer; a playing video/audio keeps its swipes
+let touch = null;
+$("#lb").addEventListener("touchstart", ev => {
+  touch = null;
+  if (ev.touches.length !== 1 || (window.visualViewport?.scale ?? 1) > 1.01) return;  // pinch / zoomed in
+  const m = $("#stage").querySelector("video,audio");
+  if (m && !m.paused && !m.ended) return;
+  const t = ev.touches[0];
+  // the bottom strip of a video is its scrubber; don't turn a seek into a page turn
+  if (m && m.contains(ev.target) && t.clientY > m.getBoundingClientRect().bottom - 60) return;
+  touch = {x: t.clientX, y: t.clientY, at: Date.now()};
+}, {passive: true});
+$("#lb").addEventListener("touchmove", ev => { if (ev.touches.length > 1) touch = null; }, {passive: true});
+$("#lb").addEventListener("touchend", ev => {
+  if (!touch) return;
+  const t = ev.changedTouches[0], dx = t.clientX - touch.x, dy = t.clientY - touch.y;
+  const quick = Date.now() - touch.at < 800;
+  touch = null;
+  if (quick && Math.abs(dx) > 50 && Math.abs(dx) > 1.5 * Math.abs(dy)) step(dx < 0 ? 1 : -1);
+});
 
 function openSearch() { $("#search").classList.add("open"); $("#filter").focus(); }
 $("#searchbtn").onclick = openSearch;
