@@ -766,7 +766,9 @@ function openLb(i) {
   const e = shown[i], src = "/file?path=" + enc(e.path);
   let m;
   if (e.kind === "image") m = el("img", {src, alt: e.name});
-  else if (e.kind === "video") m = el("video", {src, controls: "", autoplay: "", playsinline: ""});
+  // no autoplay; the thumbnail poster stands in for the first frame, which iOS won't load until play
+  else if (e.kind === "video") m = el("video", {src, controls: "", playsinline: "", preload: "metadata",
+                                                poster: "/thumb?path=" + enc(e.path) + "&size=512"});
   else m = el("audio", {src, controls: "", autoplay: ""});
   $("#stage").append(m);
   $("#cap").textContent = e.name + "  (" + fmt(e.size) + ")";
